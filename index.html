@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>基于视频遮罩的动态文字排版 · Pretext</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #080810; font-family: "Helvetica Neue", "PingFang SC", sans-serif; }
+
+/* ── 选择界面 ── */
+#setup {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+  background: #080810;
+}
+#setup-card {
+  width: min(520px, 92vw);
+  padding: 44px 40px 36px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.03);
+  backdrop-filter: blur(8px);
+}
+#setup-card h1 {
+  font-size: 15px; font-weight: 500; letter-spacing: .12em;
+  color: rgba(255,255,255,0.7); text-transform: uppercase;
+  margin-bottom: 32px;
+}
+.field { margin-bottom: 24px; }
+.field label {
+  display: block; font-size: 11px; letter-spacing: .1em;
+  color: rgba(255,255,255,0.35); text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+/* 视频上传区 */
+#drop-zone {
+  position: relative; height: 88px;
+  border: 1px dashed rgba(255,255,255,0.15); border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: border-color .2s, background .2s;
+}
+#drop-zone:hover, #drop-zone.over {
+  border-color: rgba(255,255,255,0.35);
+  background: rgba(255,255,255,0.04);
+}
+#drop-zone input[type=file] {
+  position: absolute; inset: 0; opacity: 0; cursor: pointer;
+}
+#drop-label {
+  font-size: 12px; color: rgba(255,255,255,0.28);
+  letter-spacing: .04em; pointer-events: none;
+  text-align: center; line-height: 1.6;
+}
+#drop-label span { display: block; font-size: 10px; margin-top: 3px; color: rgba(255,255,255,0.18); }
+#file-name {
+  font-size: 11px; color: rgba(120,200,140,0.8);
+  margin-top: 6px; text-align: center; min-height: 16px;
+}
+
+/* 文字输入区 */
+#text-input {
+  width: 100%; height: 110px; resize: none;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;
+  padding: 12px 14px; font-size: 13px; line-height: 1.7;
+  color: rgba(255,255,255,0.75); outline: none;
+  transition: border-color .2s;
+}
+#text-input:focus { border-color: rgba(255,255,255,0.25); }
+#text-input::placeholder { color: rgba(255,255,255,0.2); }
+#char-hint {
+  font-size: 10px; color: rgba(255,255,255,0.2);
+  margin-top: 5px; text-align: right;
+}
+
+/* 灰度滑块 */
+.slider-row {
+  display: flex; align-items: center; gap: 12px;
+}
+#thresh-slider {
+  flex: 1; -webkit-appearance: none; appearance: none;
+  height: 3px; border-radius: 2px; outline: none; cursor: pointer;
+  background: linear-gradient(to right,
+    rgba(255,255,255,0.55) 0%,
+    rgba(255,255,255,0.55) var(--pct,82%),
+    rgba(255,255,255,0.1) var(--pct,82%));
+}
+#thresh-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 14px; height: 14px;
+  border-radius: 50%; background: rgba(255,255,255,0.85);
+  border: none; box-shadow: 0 0 6px rgba(0,0,0,0.6);
+}
+#thresh-val {
+  font-size: 11px; color: rgba(255,255,255,0.4);
+  min-width: 28px; text-align: right; font-variant-numeric: tabular-nums;
+}
+
+/* 开始按钮 */
+#start-btn {
+  width: 100%; padding: 13px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.14); border-radius: 8px;
+  color: rgba(255,255,255,0.75); font-size: 13px; letter-spacing: .1em;
+  cursor: pointer; transition: background .2s, border-color .2s;
+  text-transform: uppercase;
+}
+#start-btn:hover {
+  background: rgba(255,255,255,0.14);
+  border-color: rgba(255,255,255,0.28);
+}
+#start-btn:disabled {
+  opacity: 0.35; cursor: not-allowed;
+}
+
+/* ── 主演示界面 ── */
+canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+video  { position: fixed; visibility: hidden; pointer-events: none;
+         top: -9999px; left: -9999px; width: 1px; height: 1px; }
+#hud   { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+         font: 11px/1.5 monospace; color: rgba(255,255,255,0.3);
+         pointer-events: none; white-space: nowrap; }
+#tip   { position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
+         font: 11px/1 "Helvetica Neue", sans-serif; color: rgba(255,255,255,0.2);
+         letter-spacing: .14em; pointer-events: none; white-space: nowrap; }
+#back-btn {
+  position: fixed; top: 14px; right: 20px; z-index: 10;
+  font: 11px/1 monospace; color: rgba(255,255,255,0.2);
+  background: none; border: none; cursor: pointer; letter-spacing: .08em;
+  padding: 4px 8px; transition: color .2s;
+}
+#back-btn:hover { color: rgba(255,255,255,0.5); }
+</style>
+</head>
+<body>
+
+<!-- ── 选择界面 ── -->
+<div id="setup">
+  <div id="setup-card">
+    <h1>Dynamic Typography · Pretext</h1>
+
+    <div class="field">
+      <label>① 选择视频文件</label>
+      <div id="drop-zone">
+        <input type="file" id="video-file" accept="video/*">
+        <div id="drop-label">
+          点击选择或拖入视频文件
+          <span>支持 MP4 · WebM · MOV</span>
+        </div>
+      </div>
+      <div id="file-name"></div>
+    </div>
+
+    <div class="field">
+      <label>② 输入文字内容</label>
+      <textarea id="text-input" placeholder="在此输入文字，将随视频形状流动排布…&#10;文字较少时会自动重复填满画面。"></textarea>
+      <div id="char-hint">建议 50 字以上效果更佳</div>
+    </div>
+
+    <div class="field">
+      <label>③ 灰度识别范围</label>
+      <div class="slider-row">
+        <input type="range" id="thresh-slider" min="30" max="254" value="210">
+        <span id="thresh-val">210</span>
+      </div>
+    </div>
+
+    <button id="start-btn">开始演示</button>
+  </div>
+</div>
+
+<!-- ── 主演示界面 ── -->
+<video id="vid" autoplay loop playsinline crossorigin="anonymous"></video>
+<canvas id="c"></canvas>
+<div id="tip">DYNAMIC TYPOGRAPHY · PRETEXT OBSTACLE LAYOUT</div>
+<div id="hud">loading…</div>
+<button id="back-btn">← 重新选择</button>
+
+<script src="pretext.bundle.js"></script>
+<script>
+// ── 状态变量 ──────────────────────────────────────────────────────────────────
+let W = 0, H = 0
+let prepared      = null
+let obstacleRects = []
+let layoutLines   = []
+let needsLayout   = true
+let frameCount    = 0
+let videoReady    = false
+let userText      = ''
+let loopRunning   = false
+
+// ── Pretext API ───────────────────────────────────────────────────────────────
+const { prepareWithSegments, layoutNextLine } = Pretext
+
+// ── CONFIG ────────────────────────────────────────────────────────────────────
+const FONT_SIZE    = 15
+const LINE_H       = 24
+const FONT_STR     = `${FONT_SIZE}px Georgia, serif`
+const PAD          = 52
+const SCAN_STEP    = 5
+const DARK_THRESH  = () => +threshSlider.value
+const H_PAD_OBS    = 8
+const V_PAD_OBS    = 3
+const MIN_SLOT_W   = FONT_SIZE * 3
+const MAX_RECTS    = 500
+const LAYOUT_EVERY = 3
+const MIN_TEXT_LEN = 800   // 低于此长度时循环复制文字
+
+// ── DOM ───────────────────────────────────────────────────────────────────────
+const canvas    = document.getElementById('c')
+const ctx       = canvas.getContext('2d')
+const vid       = document.getElementById('vid')
+const hud       = document.getElementById('hud')
+const setupEl   = document.getElementById('setup')
+const videoFile = document.getElementById('video-file')
+const textInput = document.getElementById('text-input')
+const startBtn  = document.getElementById('start-btn')
+const fileName  = document.getElementById('file-name')
+const charHint  = document.getElementById('char-hint')
+const backBtn       = document.getElementById('back-btn')
+const dropZone      = document.getElementById('drop-zone')
+const threshSlider  = document.getElementById('thresh-slider')
+const threshVal     = document.getElementById('thresh-val')
+
+// 滑块联动
+function updateSlider() {
+  const v = threshSlider.value
+  threshVal.textContent = v
+  threshSlider.style.setProperty('--pct', Math.round((v - 30) / (254 - 30) * 100) + '%')
+  needsLayout = true
+}
+threshSlider.addEventListener('input', updateSlider)
+updateSlider()
+
+const offC   = document.createElement('canvas')
+const offCtx = offC.getContext('2d', { willReadFrequently: true })
+
+// ── 选择界面交互 ──────────────────────────────────────────────────────────────
+
+// 视频文件选择
+videoFile.addEventListener('change', () => {
+  if (videoFile.files[0]) {
+    fileName.textContent = '✓ ' + videoFile.files[0].name
+    updateStartBtn()
+  }
+})
+
+// 拖拽
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('over') })
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('over'))
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('over')
+  const f = e.dataTransfer.files[0]
+  if (f && f.type.startsWith('video/')) {
+    // 把文件塞入 input（DataTransfer 方式）
+    const dt = new DataTransfer()
+    dt.items.add(f)
+    videoFile.files = dt.files
+    fileName.textContent = '✓ ' + f.name
+    updateStartBtn()
+  }
+})
+
+// 字数提示
+textInput.addEventListener('input', () => {
+  const len = textInput.value.trim().length
+  charHint.textContent = len === 0
+    ? '建议 50 字以上效果更佳'
+    : `${len} 字${len < 50 ? ' · 将自动重复填满' : ''}`
+  updateStartBtn()
+})
+
+function updateStartBtn() {
+  // 只要选了视频就可以开始（文字为空会用默认文字）
+  startBtn.disabled = !videoFile.files[0]
+}
+updateStartBtn()
+
+// 开始
+startBtn.addEventListener('click', startDemo)
+
+function startDemo() {
+  const file = videoFile.files[0]
+  if (!file) return
+
+  // 处理文字：空则用默认，短则循环补足
+  let raw = textInput.value.trim()
+  if (!raw) {
+    raw = '文字在视频的形状中流动，这不是遮罩，这是排版。每一行文字都在寻找属于自己的空间，绕开黑暗，栖居于光。形式追随内容，内容追随形式。当视频帧改变，文字重新排列，如同河流遇见石头，不是停止，而是绕行。Typography flows around the shapes in the video, not through masking but through layout.'
+  }
+  // 循环复制直到足够长
+  while (raw.length < MIN_TEXT_LEN) raw = raw + raw
+  userText = raw
+
+  // 加载视频
+  const url = URL.createObjectURL(file)
+  vid.src = url
+  videoReady = false
+  vid.load()
+  vid.addEventListener('canplay', () => { videoReady = true; needsLayout = true }, { once: true })
+  vid.addEventListener('error', () => { videoReady = false }, { once: true })
+
+  // 切换界面
+  setupEl.style.display = 'none'
+
+  // 准备 Pretext
+  prepared = null
+  document.fonts.ready.then(() => {
+    prepared    = prepareWithSegments(userText, FONT_STR)
+    needsLayout = true
+    hud.textContent = 'Pretext ready…'
+  })
+
+  resize()
+  if (!loopRunning) {
+    loopRunning = true
+    requestAnimationFrame(loop)
+  }
+}
+
+// 返回重新选择
+backBtn.addEventListener('click', () => {
+  vid.pause()
+  vid.src = ''
+  videoReady  = false
+  prepared    = null
+  layoutLines = []
+  setupEl.style.display = 'flex'
+})
+
+// ── CANVAS RESIZE ─────────────────────────────────────────────────────────────
+function resize() {
+  W = canvas.width  = innerWidth
+  H = canvas.height = innerHeight
+  needsLayout = true
+}
+resize()
+window.addEventListener('resize', resize)
+
+// ── OBSTACLE EXTRACTION ───────────────────────────────────────────────────────
+function extractObstaclesFromVideo() {
+  if (!videoReady || vid.readyState < 2) return []
+  const vw = vid.videoWidth, vh = vid.videoHeight
+  if (!vw || !vh) return []
+
+  const scale = Math.min(1, 640 / vw)
+  const sw = Math.round(vw * scale), sh = Math.round(vh * scale)
+  offC.width = sw; offC.height = sh
+  offCtx.clearRect(0, 0, sw, sh)
+  try { offCtx.drawImage(vid, 0, 0, sw, sh) } catch(e) { return [] }
+
+  let data
+  try { data = offCtx.getImageData(0, 0, sw, sh).data }
+  catch(e) { videoReady = false; return [] }
+
+  const videoAspect = vw / vh, screenAspect = W / H
+  let drawW, drawH, drawX, drawY
+  if (videoAspect > screenAspect) {
+    drawW = W; drawH = W / videoAspect; drawX = 0; drawY = (H - drawH) / 2
+  } else {
+    drawH = H; drawW = H * videoAspect; drawX = (W - drawW) / 2; drawY = 0
+  }
+
+  const rects = []
+  for (let y = 0; y < sh; y += SCAN_STEP) {
+    let sx = null
+    for (let x = 0; x < sw; x++) {
+      const i    = (y * sw + x) * 4
+      const luma = data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114
+      if (luma < DARK_THRESH()) {
+        if (sx === null) sx = x
+      } else if (sx !== null) {
+        rects.push({
+          x:      drawX + (sx / sw) * drawW - H_PAD_OBS,
+          y:      drawY + (y  / sh) * drawH - V_PAD_OBS,
+          width:  ((x - sx) / sw) * drawW + H_PAD_OBS * 2,
+          height: (SCAN_STEP / sh) * drawH + V_PAD_OBS * 2,
+        })
+        sx = null
+      }
+    }
+    if (sx !== null) {
+      rects.push({
+        x:      drawX + (sx  / sw) * drawW - H_PAD_OBS,
+        y:      drawY + (y   / sh) * drawH - V_PAD_OBS,
+        width:  ((sw - sx) / sw) * drawW + H_PAD_OBS * 2,
+        height: (SCAN_STEP  / sh) * drawH + V_PAD_OBS * 2,
+      })
+    }
+  }
+
+  if (rects.length > MAX_RECTS) { rects.sort((a,b) => b.width - a.width); rects.length = MAX_RECTS }
+  return rects
+}
+
+// ── FALLBACK OBSTACLES ────────────────────────────────────────────────────────
+function fallbackObstacles(ts) {
+  const t = ts * 0.001, rects = []
+  const cx1 = W*(0.52+0.22*Math.sin(t*0.38)), cy1 = H*(0.50+0.14*Math.cos(t*0.27))
+  const rx1 = W*(0.14+0.04*Math.sin(t*0.55)), ry1 = H*(0.11+0.03*Math.cos(t*0.47))
+  for (let y = cy1-ry1; y <= cy1+ry1; y += SCAN_STEP) {
+    const dy = (y-cy1)/ry1; if (Math.abs(dy)>1) continue
+    const dx = rx1*Math.sqrt(1-dy*dy)
+    rects.push({x:cx1-dx-H_PAD_OBS,y:y-V_PAD_OBS,width:dx*2+H_PAD_OBS*2,height:SCAN_STEP+V_PAD_OBS*2})
+  }
+  const bx=W*(0.08+0.08*Math.sin(t*0.31+1.1)),by=H*(0.16+0.08*Math.sin(t*0.41+0.6)),bw=W*0.22,bh=H*0.36
+  for (let y=by; y<=by+bh; y+=SCAN_STEP)
+    rects.push({x:bx-H_PAD_OBS,y:y-V_PAD_OBS,width:bw+H_PAD_OBS*2,height:SCAN_STEP+V_PAD_OBS*2})
+  const barY=H*(0.74+0.09*Math.sin(t*0.22+2.3))
+  for (let y=barY; y<=barY+SCAN_STEP*3; y+=SCAN_STEP)
+    rects.push({x:W*0.05-H_PAD_OBS,y:y-V_PAD_OBS,width:W*0.90+H_PAD_OBS*2,height:SCAN_STEP+V_PAD_OBS*2})
+  return rects
+}
+
+// ── GEOMETRY ──────────────────────────────────────────────────────────────────
+function getBlockedForBand(rects, top, bottom) {
+  const out = []
+  for (const r of rects) {
+    if (bottom <= r.y || top >= r.y + r.height) continue
+    out.push({ left: r.x, right: r.x + r.width })
+  }
+  return out
+}
+
+function carveSlots(pageL, pageR, blocked) {
+  let slots = [{ left: pageL, right: pageR }]
+  for (const b of blocked) {
+    const next = []
+    for (const s of slots) {
+      if (b.right <= s.left || b.left >= s.right) { next.push(s); continue }
+      if (b.left  >  s.left)  next.push({ left: s.left,  right: b.left  })
+      if (b.right <  s.right) next.push({ left: b.right, right: s.right })
+    }
+    slots = next
+  }
+  return slots.filter(s => s.right - s.left >= MIN_SLOT_W)
+}
+
+// ── TEXT LAYOUT ───────────────────────────────────────────────────────────────
+function buildLines(rects) {
+  if (!prepared) return []
+  const pageL=PAD, pageR=W-PAD, pageT=PAD+32, pageB=H-PAD
+  const lines=[]; let cursor={segmentIndex:0,graphemeIndex:0}, y=pageT
+
+  while (y + LINE_H <= pageB) {
+    const blocked = getBlockedForBand(rects, y, y+LINE_H)
+    const slots   = carveSlots(pageL, pageR, blocked)
+    if (slots.length === 0) { y += LINE_H; continue }
+
+    let best = slots[0]
+    for (let i=1; i<slots.length; i++)
+      if (slots[i].right-slots[i].left > best.right-best.left) best = slots[i]
+
+    let result = layoutNextLine(prepared, cursor, best.right-best.left)
+    if (result === null) {
+      cursor = {segmentIndex:0,graphemeIndex:0}
+      result = layoutNextLine(prepared, cursor, best.right-best.left)
+      if (!result) break
+    }
+    lines.push({ text: result.text, x: best.left, y })
+    cursor = result.end
+    y += LINE_H
+  }
+  return lines
+}
+
+// ── DRAW ──────────────────────────────────────────────────────────────────────
+function draw(ts) {
+  ctx.fillStyle = '#080810'
+  ctx.fillRect(0, 0, W, H)
+
+  if (videoReady && vid.readyState >= 2) {
+    const vw=vid.videoWidth||W, vh=vid.videoHeight||H
+    const va=vw/vh, sa=W/H
+    let dw,dh,dx,dy
+    if (va>sa) { dw=W; dh=W/va; dx=0; dy=(H-dh)/2 }
+    else       { dh=H; dw=H*va; dx=(W-dw)/2; dy=0 }
+    ctx.save(); ctx.globalAlpha=0.15
+    ctx.drawImage(vid,dx,dy,dw,dh)
+    ctx.restore()
+  }
+
+  ctx.font=FONT_STR; ctx.textBaseline='top'; ctx.textAlign='left'
+  for (let i=0; i<layoutLines.length; i++) {
+    const ln=layoutLines[i]
+    const alpha=0.72+0.16*Math.sin(i*0.3+ts*0.0003)
+    ctx.shadowColor='rgba(160,200,255,0.06)'; ctx.shadowBlur=10
+    ctx.fillStyle=`rgba(218,212,200,${alpha.toFixed(2)})`
+    ctx.fillText(ln.text, ln.x, ln.y)
+  }
+  ctx.shadowBlur=0
+}
+
+// ── MAIN LOOP ─────────────────────────────────────────────────────────────────
+function loop(ts) {
+  frameCount++
+
+  if (frameCount % LAYOUT_EVERY === 0) {
+    const newRects = (videoReady && vid.readyState >= 2)
+      ? extractObstaclesFromVideo()
+      : fallbackObstacles(ts)
+    if (Math.abs(newRects.length-obstacleRects.length)>3 || frameCount%20===0) {
+      obstacleRects = newRects; needsLayout = true
+    }
+  }
+
+  if (needsLayout && prepared) {
+    layoutLines = buildLines(obstacleRects); needsLayout = false
+  }
+
+  draw(ts)
+
+  if (frameCount % 40 === 0) {
+    const mode = (videoReady && vid.readyState >= 2) ? '▶ video' : '◉ demo'
+    hud.textContent = `${mode}  obstacles:${obstacleRects.length}  lines:${layoutLines.length}`
+  }
+
+  requestAnimationFrame(loop)
+}
+</script>
+</body>
+</html>
